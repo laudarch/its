@@ -307,6 +307,11 @@ expect ":KILL"
 respond "*" ":link teach;ts emacs,emacs;tstch >\r"
 type ":vk\r"
 
+respond "*" "info\033\023"
+respond "*" ":emacs\r"
+expect ":KILL"
+respond "*" ":link sys2;ts info,emacs;tsinfo >\r"
+
 respond "*" ":midas sysbin;_syseng;dump\r"
 respond "WHICH MACHINE?" "DB\r"
 expect ":KILL"
