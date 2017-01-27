@@ -1254,6 +1254,12 @@ respond "*" ":move .temp.;maklap fasl,comlap;mk.fas 80\r"
 respond "*" ":move .temp.;phas1 fasl,comlap;ph.fas 86\r"
 respond "*" ":move .temp.;srctrn fasl,comlap;st.fas 20\r"
 
+# Build KCC support programs: GETSYM and 20XCSV.
+respond "*" ":midas kcc;ts getsym_getsym\r"
+expect ":KILL"
+respond "*" ":midas kcc;ts 20xcsv_20xcsv\r"
+expect ":KILL"
+
 # ndskdmp tape
 respond "*" ":link kshack;good ram,.;ram ram\r"
 respond "*" ":link kshack;ddt bin,.;@ ddt\r"
