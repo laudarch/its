@@ -1,0 +1,235 @@
+/*								-*-C-*-
+ *	HUMBIO - Functions for doing I/O to inferiors.
+ */
+
+#include "c-env.h"
+#include "errno.h"
+#include "sys/usysio.h"
+#include "sys/usysig.h"
+#include "sys/file.h"
+#include "sysits.h"
+#include "sys/humble.h"
+
+#if !SYS_ITS
+#error This is an ITS specific file!
+#endif
+
+#define PAGE_SIZE 02000
+#define PAGE_MASK 01777
+#define LOG_PAGE_SIZE 10
+#define PAGE_MAP_SIZE 0400
+#define LOG_PAGE_MAP_SIZE 8
+#define MEMORY_SIZE 01000000
+#define LOG_MEMORY_SIZE 18
+
+#define up_to_page(intptr)\
+    ((int *) ((((int) (intptr)) + PAGE_MASK) & ~PAGE_MASK))
+
+#define down_to_page(intptr)\
+    ((int *) (((int) (intptr)) & ~PAGE_MASK))
+
+#define up_to_page_number(intptr)\
+    ((((int) (intptr)) + PAGE_MASK) >> LOG_PAGE_SIZE)
+
+#define page_number(intptr)\
+    (((int) (intptr)) >> LOG_PAGE_SIZE)
+
+#define line_number(intptr)\
+    (((int) (intptr)) & PAGE_MASK)
+
+#define N_FRAMES 5
+
+static int frames[(N_FRAMES * PAGE_SIZE) + (PAGE_SIZE - 1)];
+
+static int map[PAGE_MAP_SIZE];	/* page # -> frame # */
+
+static int fjob[N_FRAMES];	/* <job> */
+static int fpage[N_FRAMES];	/* page # within that job */
+static int foffset[N_FRAMES];	/* address adjustment between jobs */
+static int faccess[N_FRAMES];	/* access: */
+				/* 0 => no page */
+				/* 1 => read only */
+				/* 2 => read/write */
+
+static int clock;		/* for L.R.U. scheme */
+static int ftime[N_FRAMES];	/* for L.R.U. scheme */
+
+#define get_pointer_bound(addr)\
+    (- (((int) ((int *) (addr))) | ~PAGE_MASK))
+
+/* Damnit, I just want to do a simple BLT! */
+static void do_blt(from, to, count)
+  int *from, *to, count;
+{
+#asm
+	HRLZ 6,-1(17)
+	HRR 6,-2(17)
+	MOVE 7,-3(17)
+	ADDI 7,-1(6)
+	BLT 6,(7)
+#endasm
+}
+
+/* Given a job and an address within that job, return an (int *) pointing
+ * to that location mapped into our own address space.  The access can be
+ * specified as 1, for read only, or 2, for read/write.  If read/write is
+ * requested, the page will be created within the job if it doesn't already
+ * exist.
+ */
+static int *get_pointer(job, addr, access)
+  int job, addr, access;
+{
+    int page, frame;
+
+    if (addr < 020 || addr >= MEMORY_SIZE) return (int *) 0;
+
+    if (fjob[frame = map[page = page_number(addr)]] == job
+	    && fpage[frame] == page
+	    && faccess[frame] >= access) {
+	ftime[frame] = ++clock;
+	return (int *) (foffset[frame] + addr);
+    }
+
+    {
+	int i, val, frame_page;
+
+	if (fjob[frame] != job || fpage[frame] != page) {
+	    frame = 0;
+	    for (i = 1; i < N_FRAMES; i++) {
+		if (ftime[i] < ftime[frame]) frame = i;
+	    }
+	}
+
+	frame_page = up_to_page_number(frames) + frame;
+
+	val = SYSCALL5("corblk", access > 1 ? SC_IMM(_CBNDW) : SC_IMM(_CBNDR),
+			SC_IMM(_JSELF), &frame_page, job, &page);
+
+	if (val == _EROPG && access > 1) {
+	    val = SYSCALL4("corblk", SC_IMM(_CBNDW),
+			    job, &page, SC_IMM(_JSNEW));
+	    if (!val) {
+		val = SYSCALL5("corblk", SC_IMM(_CBNDW),
+				SC_IMM(_JSELF), &frame_page, job, &page);
+	    }
+	}
+
+	if (val) {
+	    faccess[frame] = 0;
+	    return (int *) 0;
+	}
+	
+	map[page] = frame;
+	fjob[frame] = job;
+	fpage[frame] = page;
+	faccess[frame] = access;
+	ftime[frame] = ++clock;
+	foffset[frame] = (frame_page - page) * PAGE_SIZE;
+	return (int *) (foffset[frame] + addr);
+    }
+}
+
+/* Copies COUNT words from BUF into the inferior starting at ADDR.
+ * Creating memory if it doesn't exist.  Normally returns 0.  If error it
+ * returns the number of words left to be written.
+ * Possible errors:
+ *  - Bad FD, negative count, negative or huge address.
+ *  - System doesn't have enough virtual address space (temporary).
+ *  - Can't write into a foreign job.
+ */
+int j_write(fd, addr, buf, count)
+    int fd, addr, *buf, count;
+{
+    int ufx, *ptr, n;
+
+    USYS_BEG();
+
+    if (fd < 0 || fd >= OPEN_MAX
+	    || !(ufx = _uioufx[fd])
+	    || _uiotype[ufx] != _DVUSR) {
+	errno = EBADF;
+	USYS_RET(count);
+    }
+
+    if (count < 0 || addr < 0 || addr >= MEMORY_SIZE) {
+	errno = EINVAL;
+	USYS_RET(count);
+    }
+
+    while (addr < 020 && count > 0) {
+	if (SYSCALL3("usrmem", _uiodnum[ufx], &addr, &buf[0])) {
+	    errno = EACCES;
+	    USYS_RET(count);
+	}
+	buf++;
+	addr++;
+	count--;
+    }
+
+    while (count > 0) {
+	if (!(ptr = get_pointer(_uiodnum[ufx], addr, 2))) {
+	    errno = EACCES;
+	    USYS_RET(count);
+	}
+	n = get_pointer_bound(addr);
+	if (n > count) n = count;
+	do_blt(buf, ptr, n);
+	buf += n;
+	addr += n;
+	count -= n;
+    }
+
+    USYS_RET(count);
+}
+
+/* Copies COUNT words into BUF from the inferior starting at ADDR.
+ * Normally returns 0.  If error, it returns the number of words left to be
+ * written.
+ * Possible errors:
+ *  - Bad FD, negative count, negative or huge address.
+ *  - Tried to read nonexistent memory.
+ */
+int j_read(fd,  addr, buf, count)
+    int fd, addr, *buf, count;
+{
+    int ufx, *ptr, n;
+
+    USYS_BEG();
+
+    if (fd < 0 || fd >= OPEN_MAX
+	    || !(ufx = _uioufx[fd])
+	    || _uiotype[ufx] != _DVUSR) {
+	errno = EBADF;
+	USYS_RET(count);
+    }
+
+    if (count < 0 || addr < 0 || addr >= MEMORY_SIZE) {
+	errno = EINVAL;
+	USYS_RET(count);
+    }
+
+    while (addr < 020 && count > 0) {
+	if (SYSCALL3("usrmem", _uiodnum[ufx], &addr, SC_VAL(&buf[0]))) {
+	    errno = EACCES;
+	    USYS_RET(count);
+	}
+	buf++;
+	addr++;
+	count--;
+    }
+
+    while (count > 0) {
+	if (!(ptr = get_pointer(_uiodnum[ufx], addr, 1))) {
+	    errno = EACCES;
+	    USYS_RET(count);
+	}
+	n = get_pointer_bound(addr);
+	if (n > count) n = count;
+	do_blt(ptr, buf, n);
+	buf += n;
+	addr += n;
+	count -= n;
+    }
+
+    USYS_RET(count);
+}

@@ -1,0 +1,201 @@
+; -*- Mode:Scheme; Syntax:Scheme; Package:Scheme; Base:10 -*-
+
+; This runs in the SCHEME for 3600's found in ML:BAWDEN;SCHEME
+
+(define-primitive 'fs-directory-list 'fs:directory-list)
+
+(define (directory-list name)
+  (cdr (fs-directory-list name ':deleted)))
+
+(define-primitive 'file-properties 'fs:file-properties)
+
+(define-primitive 'fs-change-file-properties 'fs:change-file-properties)
+
+(define (change-file-properties name . rest)
+  (apply fs-change-file-properties name #T rest))
+
+(define-primitive 'get 'zl:get)
+(define-primitive 'send 'scl:send)
+
+(define (file-creation-date file) (get file ':creation-date))
+(define (file-reference-date file) (get file ':reference-date))
+(define (file-modification-date file) (get file ':modification-date))	; LMFS
+(define (file-length-in-bytes file) (get file ':length-in-bytes))
+(define (file-byte-size file) (get file ':byte-size))
+(define (file-length-in-blocks file) (get file ':length-in-blocks))
+(define (file-block-size file) (get file ':block-size))
+(define (file-author file) (get file ':author))
+(define (file-directory? file) (get file ':directory))	; 20X
+(define (file-link-to file) (get file ':link-to))	; ITS
+(define (file-dont-reap? file) (get file ':dont-reap))	; ITS: $
+(define (file-dont-delete? file) (get file ':dont-delete))	; 20X
+(define (file-temporary? file) (get file ':temporary))	; 20X
+(define (file-dont-dump? file) (get file ':dont-dump))
+(define (file-not-backed-up? file)	; ITS, 20X and LMFS use this
+  (get file ':not-backed-up))
+(define (file-dumped? file)		; So who uses this?
+  (get file ':dumped))
+(define (file-deleted? file) (get file ':deleted))
+(define (file-offline? file) (get file ':offline))	; 20X
+
+(define (file-link? file) (not (null? (file-link-to file))))
+
+(define (file-string-for-host file) (send (car file) ':string-for-host))
+(define (file-host file) (send (car file) ':host))
+(define (file-device file) (send (car file) ':device))
+(define (file-directory file) (send (car file) ':directory))
+(define (file-name file) (send (car file) ':name))
+(define (file-type file) (send (car file) ':type))
+(define (file-version file) (send (car file) ':version))
+
+(define (file-length-in-words file)
+  (ceiling (/ (file-length-in-bytes file)
+	      (floor (/ 36 (file-byte-size file))))))
+
+(define (file-same? file1 file2)
+  (and (= (file-creation-date file1)
+	  (file-creation-date file2))
+       (= (file-length-in-words file1)
+	  (file-length-in-words file2))))
+
+(define (file-date-for-printing t)
+  (if (null? t)
+      ""
+      (time->string t)))
+
+(define (file-name-for-printing name)
+  (cond ((eq? name ':unspecific) "")
+	((eq? name ':wild) "*")
+	(else name)))
+
+(define (flag-for-printing char flag)
+  (if flag char " "))
+
+(define (print-file file . dest)
+  (format (if (null? dest) #T (car dest))
+	  "~&~10A ~11<~A~; ~D~> ~7D ~3D ~A~A~A~A~A~A~A ~17@A"
+	  (file-name-for-printing (file-name file)) 
+	  (file-name-for-printing (file-type file))
+	  (file-name-for-printing (file-version file))
+	  (file-length-in-bytes file)
+	  (file-byte-size file)
+	  (flag-for-printing "*" (file-deleted? file))
+	  (flag-for-printing "T" (file-temporary? file))
+	  (flag-for-printing "L" (file-link? file))
+	  (flag-for-printing "D" (file-directory? file))
+	  (flag-for-printing "@" (file-dont-delete? file))
+	  (flag-for-printing "$" (file-dont-reap? file))
+	  (flag-for-printing "!" (file-not-backed-up? file))
+	  (file-date-for-printing (file-creation-date file))))
+
+(define (listf name)
+  (for-each print-file (directory-list name)))
+
+(define (file-name-less? x y)
+  (and (not (eq? y ':unspecific))
+       (or (eq? x ':unspecific)
+	   (and (not (eq? y ':wild))
+		(or (eq? x ':wild)
+		    (cond ((and (number? x) (number? y))
+			   (< x y))
+			  ((and (string? x) (string? y))
+			   (string<? x y))
+			  (else
+			   (error "Incomparable: ~S ~S" x y))))))))
+
+(define (sorted-alist-cons pair alist)
+  (cond ((null? alist)
+	 (list pair))
+	((file-name-less? (car pair) (caar alist))
+	 (cons pair alist))
+	(else
+	 (cons (car alist)
+	       (sorted-alist-cons pair (cdr alist))))))
+
+(define (sorted-directory-alist name)
+  (define alist '())
+  (define (new file)
+    (let ((name (file-name file))
+	  (type (file-type file))
+	  (version (file-version file)))
+      (define (new-version pair)
+	(cond ((assoc version (cdr pair))
+	       (error "Two versions of ~A found?" (file-string-for-host file)))
+	      (else (set-cdr! pair
+			      (sorted-alist-cons (cons version file)
+						 (cdr pair)))))
+	pair)
+      (define (new-type pair)
+	(cond ((assoc type (cdr pair)) => new-version)
+	      (else (set-cdr! pair
+			      (sorted-alist-cons (new-version (list type))
+						 (cdr pair)))))
+	pair)
+      (cond ((assoc name alist) => new-type)
+	    (else (set! alist
+			(sorted-alist-cons (new-type (list name))
+					   alist))))))
+  (for-each new (reverse (directory-list name)))
+  alist)
+
+(define (assoc2 x y aalist)
+  (let ((pair (assoc x aalist)))
+    (and pair
+	 (assoc y (cdr pair)))))
+
+(define (assoc3 x y z aaalist)
+  (let ((pair (assoc x aaalist)))
+    (and pair
+	 (assoc2 y z (cdr pair)))))
+
+(define (check-sequential-dirs name1 name2)
+  (let ((alist1 (sorted-directory-alist name1))
+	(alist2 (sorted-directory-alist name2)))
+    (let name-loop ((alist alist1))
+      (if (null? alist)
+	  #T
+	  (let type-loop ((a (cdar alist)))
+	    (if (null? a)
+		(name-loop (cdr alist))
+		(let ((pair (assoc2 (caar alist) (caar a) alist2)))
+		  (if pair
+		      (check-sequential-files (cdar a) (cdr pair)))
+		  (type-loop (cdr a)))))))))
+
+(define (check-sequential-files files1 files2)
+  (let* ((p2 (car (last-pair files2)))
+	 (p1 (assoc (car p2) files1)))
+    (cond ((file-directory? (cdr p2)))
+	  ((and p1 (file-same? (cdr p1) (cdr p2)))
+	   (cond ((not (file-dont-delete? (cdr p1)))
+		  (format #T "~2&Not marked:")
+		  (print-file (cdr p1) #T))))
+	  (else
+	   (format #T "~2&Forked?")
+	   (for-each print-file (map cdr files1))
+	   (format #T "~& --")
+	   (for-each print-file (map cdr files2))))))
+
+(define-primitive 'port-stream)
+
+(define (zl-output-destination dest)
+  (cond ((output-port? dest) (port-stream dest))
+	((eq? dest #T) (port-stream (current-output-port)))
+	((eq? dest #F) 'cl:nil)
+	(else (error "Bad output destination: ~S" dest))))
+
+(define-primitive 'cl-format 'cl:format)
+
+(define (format dest string . args)
+  (apply cl-format
+	 (zl-output-destination dest)
+	 string
+	 args))
+
+(define-primitive 'time:print-universal-time)
+
+(define (print-time dest t)
+  (time:print-universal-time t (zl-output-destination dest)))
+
+(define (time->string t)
+  (time:print-universal-time t 'cl:nil))
