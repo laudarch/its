@@ -1,4 +1,7 @@
 EMULATOR ?= simh
+IP=192.168.1.100
+GW=192.168.0.45
+NETMASK=255,255,255,248
 
 # The directores listed in SRC, DOC, and BIN are put on the sources tape.
 SRC = system syseng sysen1 sysen2 sysen3 sysnet kshack dragon channa	\
@@ -30,10 +33,8 @@ out/minsys.tape: $(ITSTAR)
 	mkdir -p out
 	cd bin; $(ITSTAR) -cf ../$@ $(MINSYS)
 
-out/sources.tape: $(ITSTAR)
+out/sources.tape: $(ITSTAR) build/$(EMULATOR)/stamp src/syshst/h3text.2012
 	mkdir -p out
-	rm -f src/system/config.*
-	cp build/$(EMULATOR)/config.* src/system
 	rm -f src/*/*~
 	cd src; $(ITSTAR) -cf ../$@ $(SRC)
 	cd doc; $(ITSTAR) -rf ../$@ $(DOC)
@@ -48,17 +49,21 @@ out/dskdmp.tape: $(WRITETAPE) $(RAM) $(DSKDMP)
 	mkdir -p out
 	$(WRITETAPE) -n 2560 $@ $(RAM) $(DSKDMP)
 
-build/$(EMULATOR)/stamp: start
-	touch $@
-
 start: build/$(EMULATOR)/start
 	ln -s $< $*
 
-build/klh10/stamp: $(KLH10)
+build/klh10/stamp: $(KLH10) start build/klh10/dskdmp.ini
+	x=`echo $(IP) | tr . ,`; sed -e "s/%IP%/$$x/" -e 's/%NETMASK%/$(NETMASK)/' < build/klh10/config.203 > src/system/config.203
 	touch $@
 
-build/simh/stamp: $(SIMH)
+build/simh/stamp: $(SIMH) start
 	touch $@
+
+build/klh10/dskdmp.ini: build/klh10/dskdmp.txt Makefile
+	sed -e 's/%IP%/$(IP)/' -e 's/%GW%/$(GW)/' < $< > $@
+
+src/syshst/h3text.2012: build/h3text.2012
+	sed -e 's/%IP%/$(IP)/' < $< > $@
 
 $(KLH10):
 	cd tools/klh10; \
@@ -80,4 +85,4 @@ $(WRITETAPE):
 	cd tools/tapeutils; make
 
 clean:
-	rm -rf out start build/*/stamp
+	rm -rf out start build/*/stamp src/system/config.* src/syshst/h3text.*
