@@ -5,21 +5,7 @@ TITLE DEUNA - poke at a DEUNA
 a=1
 p=17
 
-%devec==120		;Interrupt vector
-
-%debas==774510		;Register base address, on UBA3
-
-%decr0=%debas		;PCSR0
- %dgpcb==0001		;Get PCB block
- %dstrt==0004		;Start
- %drset==0040		;Reset
- %dinte==0100		;Enable interrupts
- %dintr==0200		;Interrupt
- %ddni ==4000		;Done
-
-%decr1=%debas+2		;PCSR1
-%decr2=%debas+4		;PCSR2
-%decr3=%debas+6		;PCSR3
+.insrt system; dedefs >
 
 go:
 	move p,[-100,,pdl]
